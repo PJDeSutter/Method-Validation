@@ -1,0 +1,1599 @@
+---
+title: Bio-analytical report
+date: "`r Sys.Date()`"
+output: rmdformats::readthedown
+  
+author : "Pieter-Jan De Sutter"
+
+params:
+  experiment: 
+    label: "Experiment name (used as report title)"
+    value: "Calibration curve 1"
+    input: text
+  experiment_date:
+    label: "Date of experiment"
+    format: "dd-mm-yyyy"
+    value: "`r Sys.Date()`"
+    input: date
+  comp:
+    label: "Compound"
+    value: "amoxicillin"
+    input: text  
+  conc_level:
+    label: "Concentration units"
+    value: "µg/mL"
+  IS: 
+    label: "Internal standard"
+    value: "amoxicillin D4"
+    input: text
+  IS_conc:
+    label: "Concentration of internal standard"
+    value: 1 
+    input: text
+
+  matrix:
+    label: "Sample matrix"
+    value: "plasma"
+    input: text
+  operators: 
+    label: "Operators"
+    value: "Pieter-Jan De Sutter"
+    input: text 
+  study: 
+    label: "Study"
+    value: "LMBKA project"
+    input: text
+  file1:
+    label: "Select Excell file (USE TEMPLATE)"
+    value: "Example_input.xlsx"
+    input: file
+    placeholder: "Please select a file"
+  weighing:
+    label: "Select weighing function"
+    value: 2
+    input: radio
+    choiceNames: [No weighing function, 1/x, 1/x²] 
+    choiceValues: [1,2,3]
+  injections:
+    label: "Select injections to process "
+    value: "Injection X"
+    input: radio
+    choiceNames: [First injection,Second injection, Third injection,
+     First and second injections, First and third injections, Second and third injections, All injections]
+    choiceValues: [1,2,3,4,5,6,7]
+  LogC:
+    label : "Use log scale for concentration and response plots"
+    value: TRUE
+  decimalsC:
+    label: "Decimals for concentration output"
+    value: 2
+    input: slider
+    min: 0
+    max: 4
+    step: 1
+  decimalsR:
+    label: "Decimals for response output"
+    value: 2
+    input: slider
+    min: 0
+    max: 6
+    step: 1
+  SizeFont:
+    label: "Font size tables"
+    input: slider
+    value: 14
+    min: 8
+    max: 16
+    step: 1
+  SizeFig:
+    label: "Font size graphs"
+    input: slider
+    value: 12
+    min: 8
+    max: 16
+    step: 1
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(fig.dim = c(6, 4))
+weighing = params$weighing
+weighing.txt <- ifelse(weighing == 1, "No",ifelse(weighing == 2, "1/X","1/X²"))
+decimalsC <- params$decimalsC
+decimalsR <- params$decimalsR
+font_size <- params$SizeFont
+plot_size <- params$SizeFig
+LogC <- params$LogC
+
+
+## packages used 
+library(tidyverse)
+library(readxl)
+library(kableExtra)
+library(gridExtra)
+library(broom)
+library(car)
+library(plotly)
+#Colours
+col_cal <- "dodgerblue4"
+col_QC <- "cyan4"
+plot_size <- 12
+## read in 
+dat <- read_excel(params$file1)
+
+#Manual read in
+#setwd("C:\\Users\\pidsutte\\OneDrive - UGent\\Doctoraat\\Bio-analysis\\Scripts & templates\\Calibration and validation script\\Version Alpha\\Example")
+#dat <- read_excel("Example_input.xlsx")
+#weighing <- 2
+#decimalsC <- 2
+#decimalsR <- 2
+#font_size <- 12
+#plot_size <- 12
+## End manual read in 
+dat$Response <- dat$Quantifier/dat$IS
+dat$Response_QUAL <- dat$Qualifier/dat$IS
+if(params$injections == 1){dat <- filter(dat, Injection ==1)}
+if(params$injections == 2){dat <- filter(dat, Injection == 2)}
+if(params$injections == 3){dat <- filter(dat, Injection == 3)}
+if(params$injections == 4){dat <- filter(dat, Injection == 1 | Injection == 2)}
+if(params$injections == 5){dat <- filter(dat, Injection == 1 | Injection == 3)}
+if(params$injections == 6){dat <- filter(dat, Injection == 2 | Injection == 3)}
+dat <- unite(dat,c(Type,Level,Replicate), col ="ID", sep=" ", remove=FALSE, na.rm = FALSE)
+
+#Calculate the average output based on the repeated injections
+dat_inj_sum <- dat %>% group_by(ID) %>% summarise_at(c("Std_conc", "Rt_analyte", "Quantifier","IS","Response", "Qualifier", "Response_QUAL","Peak_asymmetry","Signal_to_noise"), list(~mean(.),~sd(.)))
+dat_inj_sum <- separate(dat_inj_sum, col = ID, sep =" ", into = c("Type","Level", "Replicate"), remove = FALSE, )
+
+##----------- CALIBRATION CURVE ----------------------
+### Calsum (= calibration curve based on chosen weighing model) & calcurve (= linear model)
+calsum <- subset(dat_inj_sum, Type=="Standard") 
+if(weighing == 1){
+  calcurve <- lm(Std_conc_mean~Response_mean, data = calsum) ;
+  calsum$FIT <- calcurve$fitted.values ;
+  calsum$ACC <- 100*(calcurve$fitted.values-calsum$"Std_conc_mean")/calsum$"Std_conc_mean";
+  calsum$RES <- calcurve$residuals} #linear unweight model
+
+if(weighing == 2){
+  calcurve <- lm(Std_conc_mean~Response_mean, data = calsum, weights = 1/calsum$Std_conc_mean);
+  calsum$FIT <- calcurve$fitted.values ;
+  calsum$ACC <- 100*(calcurve$fitted.values-calsum$"Std_conc_mean")/calsum$"Std_conc_mean";
+  calsum$RES <- calcurve$residuals} # linear weight 1/x model
+
+if(weighing == 3){
+  calcurve  <- lm(Std_conc_mean~Response_mean, data = calsum, weights = 1/(calsum$Std_conc_mean^2));
+  calsum$FIT <- calcurve$fitted.values ;
+  calsum$ACC <- 100*(calcurve$fitted.values-calsum$"Std_conc_mean")/calsum$"Std_conc_mean";
+  calsum$RES <- calcurve$residuals} # linear weight 1/x²
+
+### calcurve_table = summary table calibrators based on calsum 
+calcurve_table <- select(calsum, Level, Std_conc_mean, Quantifier_mean, IS_mean, Response_mean,FIT, ACC)
+calcurve_table <- mutate_at(calcurve_table, vars(Quantifier_mean, IS_mean), funs(round(., digits=0)))
+calcurve_table <- mutate_at(calcurve_table, vars(Response_mean), funs(round(., digits=decimalsR)))
+calcurve_table <- mutate_at(calcurve_table, vars(ACC), funs(round(., digits=2)))
+calcurve_table <- mutate_at(calcurve_table, vars(Std_conc_mean,FIT), funs(round(., digits=decimalsC)))
+calcurve_table  <- mutate(calcurve_table , accuracy_criterium = ifelse(Std_conc_mean == min(calcurve_table[,2]), 
+                                                                         ifelse( abs(calcurve_table$ACC) <20, TRUE, FALSE),
+                                                                         ifelse( abs(calcurve_table$ACC) <15, TRUE, FALSE)))
+
+### acceptance criteria calibration curve 
+  # calcurve_crit01 = 75% of calibrators within specification for bias
+calcurve_inacuratesum <- count(calcurve_table )- sum(calcurve_table$accuracy_criterium)
+calcurve_acurateperc <- 100- (calcurve_inacuratesum/count(calcurve_table))*100
+calcurve_inacurateperc <- 100-calcurve_acurateperc
+calcurve_crit01 <- ifelse(calcurve_acurateperc < 75, "NO", "YES")
+
+  # Calcurve_crit 02 = Amount of accurate calibrators > N
+calcurve_Npass <- count(filter(calcurve_table, accuracy_criterium == TRUE) )
+calcurve_crit02 <- ifelse(count(calsum) >=  6, "YES","NO")
+
+  # Calibrators out of specification 
+cal.OOS <- filter(calcurve_table, accuracy_criterium == FALSE)
+calcurve_crit01b <- ifelse(count(cal.OOS)== 0,"YES","NO")
+
+  # Accuracy criterium calibrators TOTAL 
+calcurve_crittot <- ifelse(calcurve_crit01 == "YES" & calcurve_crit02 == "YES", "accepted", "rejected")
+calcurve_crittot <- ifelse(calcurve_crittot == "accepted"& calcurve_crit01b == "NO", 
+                           paste0("Ok, but ommit calibrator(s): ",toString(cal.OOS$Level) ," and re-evaluate ", sep = ""),
+                           calcurve_crittot)
+
+# calcurve_crit03 = LLOQ withing 20% bias  (only for validation)
+calcurve_LLOQ <- subset(calcurve_table, Std_conc_mean == min(Std_conc_mean))
+calcurve_crit03 <- ifelse (calcurve_LLOQ$accuracy_criterium == "TRUE", "YES", "NO")
+
+# calcurve_crit04 = ULOQ within 15% bias 
+calcurve_ULOQ <- subset(calcurve_table, Std_conc_mean == max(Std_conc_mean))
+calcurve_crit04 <- ifelse (calcurve_ULOQ$accuracy_criterium == "TRUE", "YES", "NO")
+
+calcurve_table <- rename(calcurve_table, c("Calibrator" = "Level",
+                                             "Nominal concentration" = "Std_conc_mean",
+                                             "Quantifier analyte" = "Quantifier_mean",
+                                             "Quantifier IS" = "IS_mean",
+                                           "Response" = "Response_mean",
+                                             "Fitted concentration " = "FIT", 
+                                             "Accuracy (% bias)" = "ACC"))
+
+## comparison of the different weighing models 
+calcurve_1 <- lm(Std_conc_mean~Response_mean, data = calsum) #linear unweight
+calcurve_2 <- lm(Std_conc_mean~Response_mean, data = calsum, weights = 1/calsum$Std_conc_mean) # linear weight 1/x 
+calcurve_3 <- lm(Std_conc_mean~Response_mean, data = calsum, weights = 1/(calsum$Std_conc_mean^2)) # linear weight 1/x²
+
+calcurves_table <- tibble(Theoretical_conc = calsum$"Std_conc_mean", 
+                          Unweight_fitted_concentration = calcurve_1$fitted.values,
+                          Unweight_residuals = calcurve_1$residuals,
+                          Unweight_accuracy = 100*(calcurve_1$fitted.values-calsum$"Std_conc_mean")/calsum$"Std_conc_mean",
+                          Weight1overx_fitted_concentration = calcurve_2$fitted.values, 
+                          Weight1overx_residuals = calcurve_2$residuals,
+                          Weight1overx_accuracy = 100*(calcurve_2$fitted.values-calsum$"Std_conc_mean")/calsum$"Std_conc_mean",
+                          Weight1overx2_fitted_concentration = calcurve_3$fitted.values, 
+                          weight1overx2_residuals = calcurve_3$residuals,
+                          Weight1overx2_accuracy = 100*(calcurve_3$fitted.values-calsum$"Std_conc_mean")/calsum$"Std_conc_mean")
+
+
+##------------QC SAMPLES [ACCURACY & PRECISION]------------------------------ 
+### QCsum = QC samples summarised over repeated injections [~individual QC samples]
+qcsum <- subset(dat_inj_sum, Type =="QC")
+qcsum <- mutate(qcsum, 
+                fitted_unweighted_model = predict(calcurve_1, data.frame(Response_mean = qcsum$Response_mean)),
+                Unweight_accuracy = 100*(fitted_unweighted_model-Std_conc_mean)/Std_conc_mean,
+                fitted_weighted1overx_model = predict(calcurve_2, data.frame(Response_mean = qcsum$Response_mean)),
+                weighted1overx_accuracy = 100*(fitted_weighted1overx_model-Std_conc_mean)/Std_conc_mean,
+                fitted_weighted1overx2_model = predict(calcurve_3, data.frame(Response_mean = qcsum$Response_mean)),
+                weighted1overx2_accuracy = 100*(fitted_weighted1overx2_model-Std_conc_mean)/Std_conc_mean,
+                FIT = predict(calcurve, data.frame(Response_mean = qcsum$Response_mean)),
+                ACC = 100*(FIT-Std_conc_mean)/Std_conc_mean)
+
+### QCsum2 = QC samples summarised over replicates [~QC levels]
+qcsum2 <- qcsum %>% group_by(Level) %>% summarise_at(c("Std_conc_mean", "Rt_analyte_mean", "Quantifier_mean","IS_mean","Response_mean", "Response_mean", "Response_QUAL_mean","Qualifier_mean","Peak_asymmetry_mean","Signal_to_noise_mean", "fitted_unweighted_model","fitted_weighted1overx_model","fitted_weighted1overx2_model","FIT","ACC"), list(~mean(.),~sd(.)))
+qcsum2 <- mutate(qcsum2, 
+                 fitted_unweighted_model_RSD = 100*(fitted_unweighted_model_sd/fitted_unweighted_model_mean), 
+                 fitted_weighted1overx_model_RSD = 100*(fitted_weighted1overx_model_sd/fitted_weighted1overx_model_mean), 
+                 fitted_weighted1overx2_model_RSD = 100*(fitted_weighted1overx2_model_sd/fitted_weighted1overx2_model_mean),
+                 FIT_RSD = 100*(FIT_sd/FIT_mean))
+
+###---------------- Accuracy QC samples 
+#### Accuracy all QC samples [QC samples]
+QC_table <- select(qcsum, Level, Replicate, Std_conc_mean, Quantifier_mean, IS_mean, Response_mean, FIT, ACC) 
+QC_table <- arrange(QC_table, Std_conc_mean)
+QC_table <- mutate_at(QC_table, vars(Response_mean), funs(round(.,digits = decimalsR)))
+QC_table <- mutate_at(QC_table, vars(ACC), funs(round(.,digits = 2)))
+QC_table <- mutate_at(QC_table, vars(Std_conc_mean, FIT), funs(round(.,digits = decimalsC)))
+QC_table <- mutate_at(QC_table, vars(Quantifier_mean, IS_mean), funs(round(.,digits = 0)))
+QC_table <- mutate(QC_table, accuracy_criterium = ifelse(Level == "LLOQ", 
+                                                         ifelse( abs(QC_table$ACC) <20, TRUE, FALSE),
+                                                         ifelse( abs(QC_table$ACC) <15, TRUE, FALSE)))
+
+  # QC accuracy crit 01: at least 67% of all QC samples adhere 
+QC_inacuratesum <- count(QC_table )- sum(QC_table$accuracy_criterium)
+QC_acurateperc <- 100- (QC_inacuratesum/count(QC_table))*100
+QC_inacurateperc <- 100-QC_acurateperc
+QClevel_crit01 <- ifelse(QC_acurateperc < 67, "NO", "YES")
+
+  #QC accuracy crit 02: no level with more than 50% inacurate replicates 
+QC_acclevel <-  mutate(QC_table, accuracy_criterium = ifelse(Level == "LLOQ", 
+                       ifelse( abs(QC_table$ACC) <20, 0, 1),
+                       ifelse( abs(QC_table$ACC) <15, 0, 1))) %>% group_by(Level) %>% summarise(ACC = sum(accuracy_criterium), replicate = max(Replicate))
+QC_acclevel <- mutate(QC_acclevel, acclevel = 100-(ACC/(as.integer(replicate))*100)) 
+QC_acclevel <- mutate(QC_acclevel, acclevel_crit = ifelse(acclevel < 50, 1,0)) 
+QClevel_crit02 <- ifelse(sum(QC_acclevel$acclevel_crit) == 0, "YES", "NO")
+
+#### Accuracy QC levels [QC levels]
+QCmean_table <-select(qcsum2, Level, Std_conc_mean_mean, FIT_mean, ACC_mean)
+QCmean_table <- arrange(QCmean_table, Std_conc_mean_mean)
+QCmean_table <- mutate_at(QCmean_table, vars(Std_conc_mean_mean, FIT_mean), funs(round(.,digits = decimalsC)))
+QCmean_table <- mutate_at(QCmean_table, vars(ACC_mean), funs(round(.,digits = 2)))
+QCmean_table <- mutate(QCmean_table, accuracy_criterium = ifelse(Level == "LLOQ", 
+                       ifelse( abs(QCmean_table$ACC_mean) <20, TRUE, FALSE),
+                       ifelse( abs(QCmean_table$ACC_mean) <15, TRUE, FALSE)))
+
+  #QC accuracy crit 03: all QC levels are accurate 
+QClevel_inacuratesum <- count(QCmean_table)- sum(QCmean_table$accuracy_criterium)
+QClevel_acurateperc <- 100- (QClevel_inacuratesum/count(QCmean_table))*100
+QClevel_inacurateperc <- 100-QClevel_acurateperc
+QClevel_crit03 <- ifelse(QClevel_acurateperc == 100, "YES", "NO")
+
+  #QC accuracy crit TOTAL 
+QClevel_crittot <- ifelse(QClevel_crit01 == "YES" & QClevel_crit02 == "YES" & QClevel_crit03 == "YES" , "accepted", "rejected")
+
+###-----------------Precision QC samples
+QCprecision_table <- select(qcsum2, Level, Std_conc_mean_mean, FIT_mean, FIT_sd, FIT_RSD) 
+QCprecision_table <- arrange(QCprecision_table, Std_conc_mean_mean)
+QCprecision_table <- mutate_at(QCprecision_table, vars(Std_conc_mean_mean, FIT_mean, FIT_sd), funs(round(.,digits = decimalsC)))
+QCprecision_table <- mutate_at(QCprecision_table, vars(FIT_RSD), funs(round(.,digits = 2)))
+QCprecision_table <- mutate(QCprecision_table, precision_criterium = ifelse(Level == "LLOQ", 
+                                                                        ifelse( abs(QCprecision_table$FIT_RSD) <20, TRUE, FALSE),
+                                                                        ifelse( abs(QCprecision_table$FIT_RSD) <15, TRUE, FALSE)))
+  # Precision criterium 
+QC_inprecisionsum<- count(QCprecision_table)- sum(QCprecision_table$precision_criterium)
+QC_precisionperc <- 100- (QC_inprecisionsum/count(QCprecision_table))*100
+QC_inprecisionperc <- 100-QC_precisionperc 
+QC_precisioncrit01 <- ifelse(QC_precisionperc == 100, "YES", "NO")
+QC_precisioncrittot <- ifelse(QC_precisioncrit01 == "YES", "accepted", "rejected")
+
+###---------------QC samples: Alternative weighing models
+# QC accuracy tables for all weighing models
+  # Unweiged model 
+QC_table_01 <- select(qcsum, Level, Replicate, Std_conc_mean, fitted_unweighted_model, Unweight_accuracy) 
+QC_table_01 <- arrange(QC_table_01, Std_conc_mean)
+QC_table_01 <- mutate_at(QC_table_01, vars(Std_conc_mean, fitted_unweighted_model), funs(round(.,digits = decimalsC)))
+QC_table_01 <- mutate_at(QC_table_01, vars(Unweight_accuracy), funs(round(.,digits = 2)))
+QC_table_01 <- mutate(QC_table_01, Unweight_accuracy_criterium = ifelse(Level == "LLOQ", 
+                                                                            ifelse( abs(QC_table_01$Unweight_accuracy) <20, TRUE, FALSE),
+                                                                            ifelse( abs(QC_table_01$Unweight_accuracy) <15, TRUE, FALSE)))
+QC_01_inacuratesum <- count(QC_table_01)- sum(QC_table_01$Unweight_accuracy_criterium)
+
+
+  # weighed 1/x model 
+QC_table_02 <- select(qcsum, Level, Replicate, Std_conc_mean, fitted_weighted1overx_model, weighted1overx_accuracy) 
+QC_table_02 <- arrange(QC_table_02, Std_conc_mean)
+QC_table_02 <- mutate_at(QC_table_02, vars(Std_conc_mean, fitted_weighted1overx_model), funs(round(.,digits = decimalsC)))
+QC_table_02 <- mutate_at(QC_table_02, vars(weighted1overx_accuracy), funs(round(.,digits = 2)))
+QC_table_02 <- mutate(QC_table_02, weighted1overx_accuracy_criterium = ifelse(Level == "LLOQ", 
+                                                                        ifelse( abs(QC_table_02$weighted1overx_accuracy) <20, TRUE, FALSE),
+                                                                        ifelse( abs(QC_table_02$weighted1overx_accuracy) <15, TRUE, FALSE)))
+QC_02_inacuratesum <- count(QC_table_02)- sum(QC_table_02$weighted1overx_accuracy_criterium)
+
+  # weighed 1/x² model 
+QC_table_03 <- select(qcsum, Level, Replicate, Std_conc_mean, fitted_weighted1overx2_model, weighted1overx2_accuracy) 
+QC_table_03 <- arrange(QC_table_03, Std_conc_mean)
+QC_table_03 <- mutate_at(QC_table_03, vars(Std_conc_mean, fitted_weighted1overx2_model), funs(round(.,digits= decimalsC)))
+QC_table_03 <- mutate_at(QC_table_03, vars(weighted1overx2_accuracy), funs(round(.,digits = 2)))
+QC_table_03 <- mutate(QC_table_03, weighted1overx2_accuracy_criterium = ifelse(Level == "LLOQ", 
+                                                                              ifelse( abs(QC_table_03$weighted1overx2_accuracy) <20, TRUE, FALSE),
+                                                                              ifelse( abs(QC_table_03$weighted1overx2_accuracy) <15, TRUE, FALSE)))
+QC_03_inacuratesum <- count(QC_table_03)- sum(QC_table_03$weighted1overx2_accuracy_criterium)
+
+
+
+# QC precision tables for all weighing models
+  # Unweighed model  
+QC2_table_01 <- select(qcsum2, Level, Std_conc_mean_mean, fitted_unweighted_model_mean,fitted_unweighted_model_sd, fitted_unweighted_model_RSD) 
+QC2_table_01 <- arrange(QC2_table_01, Std_conc_mean_mean)
+QC2_table_01 <- mutate_at(QC2_table_01, vars(Std_conc_mean_mean, fitted_unweighted_model_mean,fitted_unweighted_model_sd), funs(round(.,digits = decimalsC)))
+QC2_table_01 <- mutate_at(QC2_table_01, vars( fitted_unweighted_model_RSD), funs(round(.,digits = 2)))
+QC2_table_01 <- mutate(QC2_table_01, Unweight_precision_criterium = ifelse(Level == "LLOQ", 
+                                                                        ifelse( abs(QC2_table_01$fitted_unweighted_model_RSD) <20, TRUE, FALSE),
+                                                                        ifelse( abs(QC2_table_01$fitted_unweighted_model_RSD) <15, TRUE, FALSE)))
+QC_01_inprecisionsum<- count(QC2_table_01)- sum(QC2_table_01$Unweight_precision_criterium)
+
+  # Weighed 1/x model 
+QC2_table_02 <- select(qcsum2, Level, Std_conc_mean_mean, fitted_weighted1overx_model_mean,fitted_weighted1overx_model_sd, fitted_weighted1overx_model_RSD) 
+QC2_table_02 <- arrange(QC2_table_02, Std_conc_mean_mean)
+QC2_table_02 <- mutate_at(QC2_table_02, vars(Std_conc_mean_mean, fitted_weighted1overx_model_mean,fitted_weighted1overx_model_sd), funs(round(.,digits = decimalsC)))
+QC2_table_02 <- mutate_at(QC2_table_02, vars( fitted_weighted1overx_model_RSD), funs(round(.,digits = 2)))
+QC2_table_02 <- mutate(QC2_table_02, weighted1overx_precision_criterium = ifelse(Level == "LLOQ", 
+                                                                           ifelse( abs(QC2_table_02$fitted_weighted1overx_model_RSD) <20, TRUE, FALSE),
+                                                                           ifelse( abs(QC2_table_02$fitted_weighted1overx_model_RSD) <15, TRUE, FALSE)))
+QC_02_inprecisionsum<- count(QC2_table_02)- sum(QC2_table_02$weighted1overx_precision_criterium)
+
+  # Weighed 1/x² model 
+QC2_table_03 <- select(qcsum2, Level, Std_conc_mean_mean, fitted_weighted1overx2_model_mean,fitted_weighted1overx2_model_sd, fitted_weighted1overx2_model_RSD) 
+QC2_table_03 <- arrange(QC2_table_03, Std_conc_mean_mean)
+QC2_table_03 <- mutate_at(QC2_table_03, vars(Std_conc_mean_mean, fitted_weighted1overx2_model_sd,fitted_weighted1overx2_model_mean), funs(round(.,digits = decimalsC)))
+QC2_table_03 <- mutate_at(QC2_table_03, vars( fitted_weighted1overx2_model_RSD), funs(round(.,digits = 2)))
+QC2_table_03 <- mutate(QC2_table_03, weighted1overx2_precision_criterium = ifelse(Level == "LLOQ", 
+                                                                                 ifelse( abs(QC2_table_03$fitted_weighted1overx2_model_RSD) <20, TRUE, FALSE),
+                                                                                 ifelse( abs(QC2_table_03$fitted_weighted1overx2_model_RSD) <15, TRUE, FALSE)))
+QC_03_inprecisionsum<- count(QC2_table_03)- sum(QC2_table_03$weighted1overx2_precision_criterium)
+
+
+##------------RANGE------
+###----------- Blanks & carry-over
+blanks <-subset(dat, Type =="Blank" & Level != "Zero")
+trueblanks <- subset(dat, Type == "Blank" & Level == "Blank")
+
+blanks$above_LOD <- ifelse(blanks$Signal_to_noise > 3, TRUE, FALSE)
+blanks$above_LLOQ <- ifelse(blanks$Signal_to_noise > 10, TRUE, FALSE)
+blanks$signal_LLOQ_analyte <- c(calsum$Quantifier_mean[1])
+blanks$carryover_analyte <- ifelse(blanks$Quantifier > (blanks$signal_LLOQ_analyte*0.2), TRUE, FALSE)
+blanks$signal_LLOQ_IS <- c(calsum$IS_mean[1])
+blanks$carryover_IS<- ifelse(blanks$IS > (blanks$signal_LLOQ_IS*0.05), TRUE, FALSE)
+
+trueblanks$signal_LLOQ_IS <- c(calsum$IS_mean[1])
+trueblanks$carryover_IS<- ifelse(trueblanks$IS > (trueblanks$signal_LLOQ_IS*0.05), TRUE, FALSE)
+
+carryover_present <- sum(ifelse((sum(blanks$carryover_analyte)+sum(trueblanks$carryover_IS)==0), FALSE,TRUE))
+
+blanks_above_LOD <- sum(blanks$above_LOD)
+
+blanks_above_LLOQ <- sum(blanks$above_LLOQ)
+
+blankssum <- blanks %>% group_by(Replicate) %>% summarise_at(c("Std_conc", "Quantifier","IS", "Response", "Response_QUAL","Qualifier","Peak_asymmetry","Signal_to_noise"), list(~mean(.),~sd(.)))
+
+###--------- Range 
+## LLOQ 
+LLOQ_cal <- subset(calsum,Std_conc_mean == min(calsum$Std_conc_mean))
+
+range_min <- LLOQ_cal$Std_conc_mean
+LLOQ_quant <- LLOQ_cal$Quantifier_mean
+LLOQ_IS <- LLOQ_cal$IS_mean
+
+blank_quant_max <- max(trueblanks$Quantifier)
+LLOQ_to_blank <- LLOQ_quant/blank_quant_max
+
+LLOQ_crit02 <- ifelse(LLOQ_to_blank > 5, "YES", "NO")
+
+## ULOQ
+ULOQ_cal <- subset(calsum,Std_conc_mean == max(calsum$Std_conc_mean))
+
+range_max <- ULOQ_cal$Std_conc_mean
+range <- c(range_min, range_max)
+carryover <- subset(blanks, Level == "Carryover")
+carryover_analyte <- mean(carryover$Quantifier)
+carryover_IS <- mean(carryover$IS)
+
+carryover_analyte_to_LLOQ <- (carryover_analyte/LLOQ_quant)*100
+ULOQ_crit02A <- ifelse(carryover_analyte_to_LLOQ > 20, "NO", "YES")
+
+carryover_IS_to_LLOQ <- (carryover_IS/LLOQ_IS)*100
+ULOQ_crit02B <- ifelse(carryover_IS_to_LLOQ > 5, "NO", "YES")
+
+carryover_crit <- ifelse(ULOQ_crit02A == "YES" & ULOQ_crit02B == "YES", "insignificant carry-over","significant carry-over" )
+
+## Range criteria 
+LLOQ_crit <- ifelse(calcurve_crit03 == "YES" & LLOQ_crit02 == "YES", "accepted","rejected")
+ULOQ_crit <- ifelse(calcurve_crit04 == "YES" & carryover_crit =="insignificant carry-over", "accepted","rejected")
+
+## QC samples in range 
+QClow <- subset(QCmean_table, Level == "LOW")
+QClow_range_crit <- ifelse(QClow$Std_conc_mean_mean < (3*range_min) & QClow$Std_conc_mean_mean > range_min , "YES","NO")
+
+QChigh <- subset(QCmean_table, Level == "HIGH")
+QChigh_range_crit <- ifelse(QChigh$Std_conc_mean_mean > (0.75*range_max) & QChigh$Std_conc_mean_mean < range_max , "YES","NO")
+
+QCmid <- subset(QCmean_table, Level == "MID")
+QCmid_range_crit <- ifelse(QCmid$Std_conc_mean_mean > QClow$Std_conc_mean_mean & QCmid$Std_conc_mean_mean < QChigh$Std_conc_mean_mean , "YES","NO")
+QC_range_crit <- ifelse(QCmid_range_crit == "YES" & QChigh_range_crit == "YES" & QClow_range_crit == "YES", "accepted","rejected")
+##------------SAMPLES-----
+analytessum <-subset(dat_inj_sum, Type=="Analyte")
+analytessum <- mutate(analytessum, FIT = predict(calcurve, data.frame(Response_mean = analytessum$Response_mean)))
+
+analytessum2 <- group_by(analytessum, Level) %>% summarise_at(c("Std_conc_mean", "Rt_analyte_mean", "Quantifier_mean","IS_mean", "Response_mean", "Response_QUAL_mean","Qualifier_mean","Peak_asymmetry_mean","Signal_to_noise_mean", "FIT"), list(~mean(.),~sd(.)))
+analytessum2 <- mutate(analytessum2, FIT_RSD =  100*(FIT_sd/FIT_mean))
+
+analytes <- select(analytessum, Level, Replicate, Quantifier_mean, IS_mean, Response_mean, FIT)
+analytes <- mutate_at(analytes, vars(Quantifier_mean, IS_mean), funs(round(.,digits = 0)))
+analytes <- mutate_at(analytes, vars(Response_mean), funs(round(.,digits = decimalsR)))
+analytes <- mutate_at(analytes, vars(FIT), funs(round(.,digits = decimalsC)))
+analytes  <- mutate(analytes , range = ifelse(FIT < range_min , "< LLOQ",ifelse( FIT > range_max , "> ULOQ", "In range")))
+
+analytessummary <- select(analytessum2, Level, Quantifier_mean_mean, IS_mean_mean, Response_mean_mean, FIT_mean, FIT_sd, FIT_RSD)
+analytessummary <- mutate_at(analytessummary, vars(Quantifier_mean_mean, IS_mean_mean), funs(round(.,digits = 0)))
+analytessummary <- mutate_at(analytessummary, vars(FIT_RSD), funs(round(.,digits = 2)))
+analytessummary <- mutate_at(analytessummary, vars(Response_mean_mean), funs(round(.,digits = decimalsR)))
+analytessummary <- mutate_at(analytessummary, vars(FIT_mean, FIT_sd), funs(round(.,digits = decimalsC)))
+analytessummary  <- mutate(analytessummary , range = ifelse(FIT_mean < range_min , "< LLOQ",ifelse( FIT_mean > range_max , "> ULOQ", "In range")))
+
+### Analytical run criteria 
+
+#### At least 1 blank sample  [anrun_crit_01]
+anrun_crit_01 <- ifelse(count(blankssum) >= 1, "YES","NO")
+
+#### At least 1 zero sample [anrun_crit_02]
+anrun_crit_02 <- ifelse(count(subset(dat_inj_sum,Level == "Zero")) >= 1, "YES","NO")
+
+#### At least 6 calibration standards [anrun_crit_03]
+anrun_crit_03 <- ifelse(count(calsum) >=  6, "YES","NO")
+
+#### At least 3 QC levels [anrun_crit_04]
+anrun_crit_04 <- ifelse(count(qcsum2) >=  3, "YES","NO")
+
+#### Amount of QC samples [anrun_crit_05]
+anrun_crit_05_req <- ifelse((0.05*count(analytessum2))> (2*count(qcsum2)),0.05*count(analytessum2), 2*count(qcsum2))
+anrun_crit_05 <- ifelse(count(qcsum) >= anrun_crit_05_req, "YES","NO")
+
+#### Total run criteria [anrun_crit_tot]
+anrun_crit_tot <- ifelse(anrun_crit_01 == "YES" & anrun_crit_02 == "YES" & anrun_crit_03 == "YES" & anrun_crit_04 == "YES" & anrun_crit_05 == "YES",
+                         "accepted", "rejected")
+```
+# Report  `r params$experiment`
+## Context
+This report evaluates the results of an analytical run according to the [EMA Guideline on bioanalytical method validation (Rev.1 Corr.2, 2011)](https://www.ema.europa.eu/en/documents/scientific-guideline/guideline-bioanalytical-method-validation_en.pdf). It does not substitute the analytical- or the validation report as key information on the used protocol is not incorporated  (e.g. storage conditions, batch numbers, ...).  
+The script was written in R 4.1.0 and formatted with the aid of the [rmarkdown package](https://rmarkdown.rstudio.com/). Documentation and source code of the  script can be found at the [Github repository of the original author](https://github.com/PJDeSutter/Method-Validation). The report generator can be cited as: *De Sutter PJ, Bio-analytical report generator, (2022), GitHub repository, https://github.com/PJDeSutter/Method-Validation*     
+
+# 1. Summary
+## 1.1. Procedure
+
+Study data |
+------|------
+Study name | `r paste(params$study)`
+Experiment date | `r paste(params$experiment_date)`
+Compound | `r paste(params$comp)`
+Matrix | `r paste(params$matrix)`
+Internal standard (IS) | `r paste(params$IS)`
+Weighing model | `r paste(weighing.txt)`
+Operator | `r paste(params$operators)`
+
+
+## 1.2. Results
+Run acceptance criteria (section)  |  Conclusion
+------|------
+Accuracy of calibrators (2.4) | __`r paste(calcurve_crittot)`__
+Accuracy of QC samples (3.4)  | __`r paste(QClevel_crittot)`__ 
+Precision of QC samples (4.4)  | __`r paste(QC_precisioncrittot)`__ 
+Range: LLOQ (5.1.4)| __`r paste(LLOQ_crit)`__ (`r paste(round(range_min,decimalsC))` `r paste(params$conc_level)`)
+Range: ULLOQ (5.2.4)| __`r paste(ULOQ_crit)`__ (`r paste(round(range_max, decimalsC))` `r paste(params$conc_level)`)
+Carry-over (4.2.4) | __`r paste(carryover_crit)`__
+QC samples in range (4.3.1)| __`r paste(QC_range_crit)`__ for validation, for study samples see section 6.4
+Analytical run completeness (6.3) | __`r paste(anrun_crit_tot)`__  
+
+
+```{r conclusion samples table, echo=FALSE, include = TRUE}
+analytesconclusion <- select(analytessummary, Level, FIT_mean, FIT_RSD, range)
+analytesconclusion <- mutate_at(analytesconclusion, vars(FIT_mean), funs(round(.,digits = 2)))
+analytesconclusion <- rename(analytesconclusion, c("Sample name"="Level",
+                                                   "Fitted concentration" = "FIT_mean",
+                                                   "Precision (% CV)"="FIT_RSD",
+                                                   "In calibration range?" = "range"))
+analytesconclusion_kable <- knitr::kable(analytesconclusion, 
+                                format = "html",
+                                digits = getOption("digits"),
+                                align = "lccccccccc",
+                                row.names = NA,
+                                col.names = NA,
+                                caption = "Summary of study samples",
+                                label =,
+                                format.args = list(),
+                                escape = FALSE) %>% kable_styling(bootstrap_options = "hover", font_size = font_size) %>% add_footnote(paste("concentration units =", params$conc_level))
+analytesconclusion_kable
+            
+
+```
+
+***
+# 2. Calibration curve
+## 2.1. Definition 
+*"The __calibration curve__ is the relationship between instrument response and known concentration of the analyte."*
+
+
+## 2.2. Acceptance criteria 
+*"The back calculated concentrations of the calibration standards should be within ±15% of the nominal value, except for the LLOQ for which it should be within ±20%. At least 75% of the calibration standards, with a minimum of six, must fulfill this criterion. "*  
+*"In case a calibration standard does not comply with these criteria, this calibration standard sample should be rejected, and the calibration curve without this calibration standard should be re-evaluated, including regression analysis"*
+
+## 2.3. Results
+### 2.3.1. Summary table calibrators
+```{r summary table calibrators, echo = FALSE}
+calcurve_table_badrows <- which(calcurve_table$accuracy_criterium == FALSE)
+calcurve_table <- subset(calcurve_table, select =-accuracy_criterium)
+
+calcurve_kable <- knitr::kable(calcurve_table,
+                       format = "html",
+                       digits = getOption("digits"),
+                       align = "lccccccc",
+                       row.names = NA,
+                       col.names = NA,
+                       caption = "Calibration standards",
+                       label =,
+                       format.args = list(),
+                       escape = FALSE) %>% kable_styling(bootstrap_options = "hover", 
+                                                         full_width = F,
+                                                         position = "left",
+                                                         font_size = font_size) %>% add_footnote(paste("concentration units =", params$conc_level))%>%row_spec(calcurve_table_badrows, color = "red")
+calcurve_kable
+```
+
+### 2.3.2. Plots
+```{r calibration curve ,echo = FALSE, fig.align = "center",message = FALSE}
+#Generate the calibration curve graphs
+if(params$weighing == 1) {calibration_curve <- ggplot(data = calsum, aes(x=Std_conc_mean, y = Response_mean )) + 
+  geom_point(colour = col_cal, size = 2.5) + 
+  geom_smooth(method =lm, se = FALSE, colour = col_cal)+ 
+  theme_classic(base_size = plot_size) + 
+  labs(x=paste("Nominal concentration ", params$comp, " (", params$conc_level, ")", sep =""), y ="Response", title = "Calibration curve") + 
+  #geom_errorbar(aes(ymin=Response_mean - Response_sd, ymax = Response_mean + Response_sd))+
+  {if(LogC)scale_x_log10()}+
+  {if(LogC)scale_y_log10()}}
+if(params$weighing ==2){calibration_curve <- ggplot(data = calsum, aes(x=Std_conc_mean, y = Response_mean, weight = 1/calsum$Std_conc_mean)) + 
+  geom_point(colour = col_cal, size = 2.5) + 
+  geom_smooth(method =lm, se = FALSE, colour = col_cal)+
+  theme_classic(base_size = plot_size) + 
+  labs(x=paste("Nominal concentration ", params$comp, " (", params$conc_level, ")", sep =""), y ="Response", title = "Calibration curve 1/x weighed model") + 
+  #geom_errorbar(aes(ymin=Response_mean - Response_sd, ymax = Response_mean + Response_sd))+
+  {if(LogC)scale_x_log10()}+
+  {if(LogC)scale_y_log10()}}
+if(params$weighing == 3){calibration_curve <- ggplot(data = calsum, aes(x=Std_conc_mean, y = Response_mean, weight = 1/(calsum$Std_conc_mean^2))) +
+  geom_point(colour = col_cal, size = 2.5) + 
+  geom_smooth(method =lm, se = FALSE, colour = col_cal)+
+  labs(x=paste("Nominal concentration ", params$comp, " (", params$conc_level, ")", sep =""), y ="Response", title = "Calibration curve 1/x² weighed model") +
+  theme_classic(base_size = plot_size) + 
+  #geom_errorbar(aes(ymin=(Response_mean - Response_sd), ymax = (Response_mean + Response_sd)))+
+  {if(LogC)scale_x_log10()}+
+  {if(LogC)scale_y_log10()}}
+
+calibration_curve <- ggplotly(calibration_curve)
+calibration_curve
+
+```
+<br/>
+```{r calibration curve accuracy ,echo = FALSE, fig.align = "center"}
+#Generate the accuracy graphs for the calibrators 
+if(params$weighing == 1){cal_accuracy <- ggplot(data = calcurves_table, aes(x=Theoretical_conc, y = Unweight_accuracy )) + 
+  geom_point(colour = col_cal, size = 2.5) + 
+  geom_hline(yintercept= 15,colour="red")+
+  geom_hline(yintercept= -15,colour="red")+
+  geom_hline(yintercept= 20,colour="red",linetype = "dashed")+
+  geom_hline(yintercept= -20,colour="red",linetype = "dashed")+
+  labs(x=paste("Nominal concentration ", params$comp, " (", params$conc_level, ")", sep =""), y ="Accuracy (% bias)", title = "Accuracy of the calibrators",subtitle = "unweighed model")+
+  {if(LogC)scale_x_log10()}+
+  theme_classic(base_size = plot_size)}
+if(params$weighing ==2){cal_accuracy <- ggplot(data = calcurves_table, aes(x=Theoretical_conc, y = Weight1overx_accuracy )) + 
+  geom_point(colour = col_cal, size = 2.5) + 
+  geom_hline(yintercept= 15,colour="red")+
+  geom_hline(yintercept= -15,colour="red")+
+  geom_hline(yintercept= 20,colour="red",linetype = "dashed")+
+  geom_hline(yintercept= -20,colour="red",linetype = "dashed")+
+  labs(x=paste("Nominal concentration ", params$comp, " (", params$conc_level, ")", sep =""), y ="Accuracy (% bias)", title = "Accuracy of the calibrators  ",subtitle = "1/x weighed model")+
+  {if(LogC)scale_x_log10()}+
+  theme_classic(base_size = plot_size)}
+if(params$weighing ==3){cal_accuracy <- ggplot(data = calcurves_table, aes(x=Theoretical_conc, y = Weight1overx2_accuracy )) + 
+  geom_point(colour = col_cal, size = 2.5) + 
+  geom_hline(yintercept= 15,colour="red")+
+  geom_hline(yintercept= -15,colour="red")+
+  geom_hline(yintercept= 20,colour="red",linetype = "dashed")+
+  geom_hline(yintercept= -20,colour="red",linetype = "dashed")+
+  labs(x=paste("Nominal concentration ", params$comp, " (", params$conc_level, ")", sep =""), y ="Accuracy (% bias)", title = "Accuracy of the calibrators",subtitle = "1/x² weighed model")+
+  {if(LogC)scale_x_log10()}+
+  theme_classic(base_size = plot_size)}
+
+cal_accuracy <- ggplotly(cal_accuracy)
+cal_accuracy
+
+# F statistic, standard errors & signifcance calibration model
+
+calcurve_F <- anova(calcurve)[1,4]
+calcurve_se <- summary(calcurve)$coefficients[,"Std. Error"]
+calcurve_sig <- summary(calcurve)$coefficients[,4]
+calcurve_sig<- as.data.frame(calcurve_sig)
+calcurve_sig <- mutate_all(calcurve_sig, function(x) ifelse(x>=0.05, "N.S.","p<0.05"))
+
+```
+
+#### 2.3.3. Calibration curve parameters (diagnositics see section 7.)
+* R²         = `r paste(round(summary(calcurve)$r.squared,4))`
+* intercept  = `r paste(round(calcurve$coefficients[1],2))` (SE = `r paste(round(calcurve_se[1],2))`, `r calcurve_sig[1,1]`)
+* slope      = `r paste(round(calcurve$coefficients[2],2))` (SE = `r paste(round(calcurve_se[2],2))`, `r calcurve_sig[2,1]`)
+* F-statistic (ANOVA) = `r paste(round(calcurve_F,1))`
+
+## 2.4. Conclusion 
+*  Number of calibrators outside the applicable tolerance ranges for back-calculated concentration: `r paste(calcurve_inacuratesum)` ( `r paste(round(calcurve_inacurateperc,2))`% )
+    + At least 75% of the calibrators fall inside the tolerance ranges? --> __`r paste(calcurve_crit01)`__
+    + At least 6 calibrators fall inside the tolerance ranges --> __`r paste(calcurve_crit02)`__ 
+* Based on these criteria the calibration curve is __`r paste(calcurve_crittot)`__
+
+
+
+
+# 3. Accuracy QC samples  
+## 3.1 Definition  
+*"__Accuracy__ is the closeness of the determined concentration to the nominal concentration."*  
+  
+$$ Accuracy\ (bias)= \frac{Concentration_{fitted} - Concentration_{nominal}}{Concentration_{nominal}}*100$$
+
+## 3.2. Acceptance criteria  
+*__Analytical run__: Accuracy of the mean fitted concentration should fall within __±15% bias__ of the nominal values. At least 67% of the QC samples and at least 50% at each concentration level should comply with this criterion.*  
+*__Method validation: within-run accuracy__: minimum of 5 samples at a minimum of 4 concentration levels covering the calibration curve range (see section 5.3). The mean concentration should be within 15% of the nominal values for the QC samples, except for the LLOQ which should be within 20% of the nominal value*  
+*__Method validation: between-run accuracy__: LLOQ, low, medium, high QC samples from at least three runs analysed on at least two different days should be evaluated. The mean concentration should be within 15% of the nominal values for the QC samples, except for the LLOQ which should be within 20% of the nominal value.*  
+
+## 3.3. Results  
+
+### 3.3.1. Individual QC samples  
+```{r QC samples  accuracy, echo=FALSE, warning = FALSE,fig.align = "center"}
+
+qcsum$Level <- fct_reorder(qcsum$Level, qcsum$Std_conc_mean, min)
+
+## Accuracy table for all QC samples
+QC_table_badrows <- which(QC_table$accuracy_criterium == FALSE)
+QC_table <- subset(QC_table, select =-accuracy_criterium)
+QC_table <- rename(QC_table, c("QC level" = "Level",
+                               "Nominal concentration" =  "Std_conc_mean",
+                               "Quantifier analyte" = "Quantifier_mean",
+                               "Quantifier IS" = "IS_mean",
+                               "Response" = "Response_mean",
+                               "Fitted concentration" = "FIT", 
+                               "Accuracy (% bias)" = "ACC"))
+                                                                  
+QC_kable<- kable(QC_table, 
+                            caption = "Accuracy QC samples: individual samples",
+                            format = "html",
+                            digits = getOption("digits"),
+                            align = "lcccccccc",
+                            rownames = NA,
+                            label = , 
+                            format.args = list(),
+                            escape = FALSE)%>% kable_styling(bootstrap_options = "hover", 
+                                                             full_width = F, 
+                                                             position = "left",
+                                                             font_size = font_size) %>% add_footnote(paste("concentration units =", params$conc_level))%>%row_spec(QC_table_badrows, color = "red")
+QC_kable
+
+# Plot for accuracy of all QC samples 
+QC_accuracy <- ggplot(data = qcsum, aes(x=Std_conc_mean, y = ACC )) + 
+  geom_point(aes(shape = Level), size = 2.5, colour = col_QC) +
+  geom_hline(yintercept= 0,colour="darkgreen",linetype = "dotted")+
+  geom_hline(yintercept= 15,colour="red")+
+  geom_hline(yintercept= -15,colour="red")+
+  geom_hline(yintercept= 20,colour="red", linetype = "dashed")+
+  geom_hline(yintercept= -20,colour="red", linetype = "dashed")+
+  labs(x=paste("Nominal concentration ", params$comp, " (", params$conc_level,")", sep = ""), 
+       y ="Accuracy (% bias)", 
+       title = "Accuracy of the QC samples")+
+  {if(LogC)scale_x_log10()}+
+  {if(LogC)annotation_logticks(sides = "b")}+
+  theme_classic(base_size = plot_size)+
+  labs(shape = "QC level:")+
+  theme(legend.position="none")
+#QC_accuracy
+
+QC_accuracy <- ggplotly(QC_accuracy)
+QC_accuracy
+```
+
+### 3.3.2. QC levels 
+```{r QC levels  accuracy, echo=FALSE, warning = FALSE, fig.align = "center"}
+
+# Summary table 
+QCmean_table_badrows <- which(QCmean_table$accuracy_criterium == FALSE)
+QCmean_table <- subset(QCmean_table, select =-accuracy_criterium)
+
+QCmean_kable <- rename(QCmean_table, c("QC level" = "Level",
+                                             "Nominal concentration" = "Std_conc_mean_mean",
+                                             "Mean fitted concentration " = "FIT_mean", 
+                                             "Accuracy (% bias)" = "ACC_mean"))
+
+QCmean_kable <- knitr::kable(QCmean_kable,
+                       format = "html",
+                       digits = getOption("digits"),
+                       align = "lcccc",
+                       row.names = NA,
+                       col.names = NA,
+                       caption = "Accuracy QC samples: level means",
+                       label =,
+                       format.args = list(),
+                       escape = FALSE
+) %>% kable_styling(bootstrap_options = "hover",full_width = F,position = "left",font_size = font_size) %>% add_footnote(paste("concentration units =", params$conc_level))%>%row_spec(QCmean_table_badrows, color = "red")
+QCmean_kable
+
+
+#Plot for the mean accuracy level
+qcsum2$Level <- fct_reorder(qcsum2$Level, qcsum2$Std_conc_mean_mean, min)
+
+QCmean_accuracy <- ggplot(data = qcsum2, aes(x=Std_conc_mean_mean, y = ACC_mean )) + 
+  geom_point(aes(shape = Level), size = 3, colour = col_QC) + 
+  geom_hline(yintercept= 0,colour="darkgreen",linetype = "dotted")+
+  geom_hline(yintercept= 15,colour="red")+
+  geom_hline(yintercept= -15,colour="red")+
+  geom_hline(yintercept= 20,colour="red", linetype = "dashed")+
+  geom_hline(yintercept= -20,colour="red", linetype = "dashed")+
+  labs(x=paste("Nominal concentration ", params$comp, " (", params$conc_level,")", sep = ""), y ="Accuracy (% bias)", title = "Accuracy of the QC levels")+
+  theme_classic(base_size = plot_size)+
+  labs(shape = "QC level:")+
+  theme(legend.position="none")+
+  {if(LogC)scale_x_log10()}+
+  {if(LogC)annotation_logticks(sides = "b")}
+#QCmean_accuracy
+
+QCmean_accuracy <- ggplotly(QCmean_accuracy)
+QCmean_accuracy
+```
+
+## 3.4. Conclusion (analytical run)  
+
+*  Amount of QC *samples* outside the applicable tolerance ranges for accuracy: `r paste(QC_inacuratesum)` ( `r paste(round(QC_inacurateperc,2))`% )
+    + At least 67% of the QC samples complies with tolerance ranges for accuracy? --> __`r paste(QClevel_crit01)`__
+    + At least 50% of the QC samples at each QC level complies with the tolerance ranges for accuracy? --> __`r paste(QClevel_crit02)`__
+*  Amount of QC *levels* outside the applicable tolerance ranges for accuracy: `r paste(QClevel_inacuratesum)` ( `r paste(round(QClevel_inacurateperc,2))`% )
+    +  All QC levels fall inside the applicable tolerance ranges for accuracy ? --> __`r paste(QClevel_crit03)`__
+*  Based on these 3 accuracy criteria the accuracy of the QC samples is __`r paste(QClevel_crittot)`__
+
+
+# 4. Precision QC samples
+## 4.1. Definition
+*"__Precision__ is the closeness of repeated individual meassures of the analyte."*  
+  
+$$ Precision\ (\% CV)= \frac{Standard\ deviation_{fitted\ concentration }}{Mean_{fitted\ concentration}}*100$$
+
+## 4.2. Acceptance criteria  
+*__Analytical run__: The coefficient of variation (CV) on the replicates should be less than  _15% CV_ for each QC level.*  
+*__Method validation: within-run precision__: minimum of 5 samples at a minimum of 4 concentration levels covering the calibration curve range (see section 5.3) in a single run. The within-run CV value should not exceed 15%  for the QC samples, except for the LLOQ which should not exceed 20%*  
+*__Method validation: between-run accuracy__: LLOQ, low, medium, high QC samples from at least three runs analysed on at least two different days should be evaluated. The between-run CV value should not exceed 15% for the QC samples, except for the LLOQ should not exceed 20% of the nominal value.* 
+
+## 4.3. Results
+```{r QC samples  precision, echo=FALSE, include = TRUE, fig.align = "center"}
+#Table 
+QCprecision_table_badrows <- which(QCprecision_table$precision_criterium == FALSE)
+QCprecision_table <- subset(QCprecision_table, select =-precision_criterium)
+
+QCprecision_kable <- rename(QCprecision_table, c("QC level" = "Level", 
+                                                 "Nominal concentration" =  "Std_conc_mean_mean", 
+                                                 "Mean fitted concentration" = "FIT_mean",
+                                                 "SD fitted concentration" = "FIT_sd",
+                                                 "Precision (% CV)" = "FIT_RSD"))
+
+QCprecision_kable <- knitr::kable(QCprecision_kable,
+                       format = "html",
+                       digits = getOption("digits"),
+                       align = "lcccc",
+                       row.names = NA,
+                       col.names = NA,
+                       caption = "Precision QC samples",
+                       label =,
+                       format.args = list(),
+                       escape = FALSE
+) %>% kable_styling(bootstrap_options = "hover",full_width = F,position = "left",font_size = font_size) %>% add_footnote(paste("concentration units =", params$conc_level))%>%row_spec(QCprecision_table_badrows, color = "red")
+QCprecision_kable
+
+#Plot
+qcsum2$Level <- fct_reorder(qcsum2$Level, qcsum2$Std_conc_mean_mean, min)
+
+QC_precision <- ggplot(data = qcsum2, aes(x=Std_conc_mean_mean, y = FIT_RSD )) + 
+  geom_point(aes(shape = Level),size = 3, colour = col_QC) + 
+  geom_hline(yintercept= 15,colour="red")+
+  geom_hline(aes(yintercept= 20,colour="red"), linetype = "dashed",show.legend = FALSE)+
+  labs(x=paste("Nominal concentration ", params$comp, " (", params$conc_level,")", sep = ""),
+       y ="Precision (% CV)", 
+       title = "Precision of the QC samples",
+       shape = "QC level:")+
+  {if(LogC)scale_x_log10()}+
+  {if(LogC)annotation_logticks(sides = "b")}+
+  theme_classic(base_size=plot_size) +
+  theme(legend.position="none")+
+  ylim(0,NA)
+#QC_precision
+QC_precision <- ggplotly(QC_precision)
+QC_precision
+```
+
+## 4.4. Conclusion (analytical run)  
+
+*  Amount of QC levels exceeding applicable tolerance ranges for precision: `r paste(round(QC_inprecisionsum,2))` ( `r paste(round(QC_inprecisionperc,2))`% )
+    +  All QC levels confirm with applicable criteria for precision ? --> __`r paste(QC_precisioncrit01)`__
+*  Based on these precision criteria the analytical run is __`r paste(QC_precisioncrittot)`__
+
+
+
+# 5. Range 
+## 5.1 LLOQ (lowest standard)
+### 5.1.1. Definition
+*The lower limit of quantification (LLOQ) is the lowest concentration of analyte in a sample which can be quantified reliably, with an acceptable accuracy and precision.The LLOQ is considered the __lowest calibration standard__.*  
+
+* Nominal concentration lowest calibration standard = **`r paste(round(range_min,decimalsC))` `r paste(params$conc_level)`**
+
+### 5.1.2. Acceptance criteria 
+1. Acceptable accuracy and precision 
+
+2. The analyte signal of the LLOQ sample should be at least 5 times the signal of a blank sample 
+
+
+### 5.1.3. Results 
+__Accuracy__  
+
+* See tab "calibration curve" for accuracy of the lowest calibration standard    
+
+    + LLOQ falls inside the tolerance ranges for accuracy (±20% bias)? --> __`r paste(calcurve_crit03)`__  
+
+__Signal LLOQ__  
+
+* The quantifier signal for the LLOQ is `r paste(round(LLOQ_quant,0))`, which is `r paste(round(LLOQ_to_blank,0))` times larger than the highest quantifier signal observed in a blank sample (`r paste(round(blank_quant_max ,0))`)  
+
+    + Analyte signal of the LLOQ sample is at least 5 times the signal of a blank sample? --> __`r paste(LLOQ_crit02 )`__  
+
+
+### 5.1.4. Conclusion 
+* Based on these criteria the LLOQ is __`r paste(LLOQ_crit)`__
+
+## 5.2. ULOQ (highest standard)
+### 5.2.1. Definition
+*The upper limit of quantification (ULOQ) is the highest concentration of analyte in a sample which can be quantified reliably, with an acceptable accuracy and precision. The LLOQ is considered the __highest calibration standard__*  
+
+* Nominal concentration highest calibration standard = **`r paste(round(range_max,decimalsC))` `r paste(params$conc_level)`**
+
+### 5.2.2. Acceptance criteria 
+1. Acceptable accuracy and precision 
+
+2. Carry-over in the blank sample following the ULOQ should not be greater than 20% of the LLOQ and 5% of the IS  
+
+
+### 5.2.3. Results 
+__Accuracy__  
+
+* See tab "calibration curve" for accuracy of the highest calibration standard  
+
+    + ULOQ falls inside the tolerance ranges for accuracy (±15% bias)? --> __`r paste(calcurve_crit04)`__  
+
+__Carry-over__
+
+* Analyte signal in carry-over blank = `r paste(round(carryover_analyte,0))`, which is `r paste(round(carryover_analyte_to_LLOQ,2))` % of the analyte signal of the LLOQ
+    + Carry-over of the analyte less than 20% of analyte in LLOQ? --> __`r paste(ULOQ_crit02A )`__
+* IS signal in carry-over blank = `r paste(round(carryover_IS,0))`, which is `r paste(round(carryover_IS_to_LLOQ,2))` % of the IS signal of the LLOQ
+    + Carry-over of the IS less than 5%? --> __`r paste(ULOQ_crit02B )`__
+* Based on these criteria there is  __`r paste(carryover_crit)`__
+
+### 5.2.4. Conclusion  
+* Based on these criteria the ULOQ is __`r paste(ULOQ_crit)`__  
+
+## 5.3. QC samples 
+### 5.3.1. Acceptance criteria  
+The QC samples should cover the calibration curve range:  
+
+__QC low__
+
+* The nominal concentration of QC low is `r paste(round(QClow$Std_conc_mean_mean,decimalsC))` `r paste(params$conc_level)`
+    + Nominal concentration of QC low between the LLOQ and 3 times the LLOQ? --> __`r paste(QClow_range_crit)`__
+
+__QC mid__
+
+* The nominal concentration of QC low is `r paste(round(QCmid$Std_conc_mean_mean,decimalsC))` `r paste(params$conc_level)`
+    + The nominal concentration higher than QC low and lower than QC high? --> __`r paste(QCmid_range_crit)`__
+
+__QC high__
+
+* The nominal concentration of QC high is `r paste(round(QChigh$Std_conc_mean_mean,decimalsC))` `r paste(params$conc_level)`
+    + Nominal concentration of the QC high between 75% of the ULLOQ and the ULOQ? --> __`r paste(QChigh_range_crit)`__
+
+
+# 6. Samples
+## 6.1. Analytes: all study samples
+```{r all samples table, echo=FALSE, include = TRUE}
+
+analytes_kable<- rename(analytes, c("Quantifier analyte"="Quantifier_mean",
+                                    "Sample name" = "Level",
+                              "Quantifier IS"="IS_mean",
+                              "Response "="Response_mean",
+                              "Fitted concentration" = "FIT"
+                              ))
+analytes_kable <- knitr::kable(analytes_kable, 
+                                format = "html",
+                                digits = getOption("digits"),
+                                align = "lccccccccc",
+                                row.names = NA,
+                                col.names = NA,
+                                caption = "All Analytical samples",
+                                label =,
+                                format.args = list(),
+                                escape = FALSE) %>% kable_styling(bootstrap_options = "hover",full_width = F,position = "left",font_size = font_size) %>% add_footnote(paste("concentration units =", params$conc_level))
+analytes_kable
+            
+
+```
+## 6.2. Analytes: average of sample replicates 
+```{r average samples table, echo=FALSE, include = TRUE}
+
+analytessummary_k <- rename(analytessummary, c("Quantifier analyte"="Quantifier_mean_mean",
+                                              "Quantifier IS"="IS_mean_mean",
+                                              "Response "="Response_mean_mean",
+                                              "Fitted concentration" = "FIT_mean",
+                                              "SD fitted concentration" = "FIT_sd",
+                                              "Precision (% CV)"="FIT_RSD",
+                                              "Sample name" = "Level"))
+analytessummary_kable <- knitr::kable(analytessummary_k, 
+                                format = "html",
+                                digits = getOption("digits"),
+                                align = "lccccccccc",
+                                row.names = NA,
+                                col.names = NA,
+                                caption = "Average fitted concentrations of samples",
+                                label =,
+                                format.args = list(),
+                                escape = FALSE) %>% kable_styling(bootstrap_options = "hover",full_width = F,position = "left",font_size = font_size) %>% add_footnote(paste("concentration units =", params$conc_level))
+analytessummary_kable
+            
+
+```
+
+## 6.3. Analtyical run criteria 
+
+1.  At least one blank sample (processed matrix sample without analyte and without IS)?   
+    * __`r paste(anrun_crit_01)`__  (`r paste(count(blankssum))` blank samples)
+2.  At least one zero sample (processed matrix sample with IS)?
+    * __`r paste(anrun_crit_02)`__  (`r paste(count(subset(dat_inj_sum,Level == "Zero")))` zero samples)
+3.  At least 6 calibration levels?  
+    * __`r paste(anrun_crit_03)`__  (`r paste(count(calsum))` calibrator levels)
+4.  At least 3 QC levels?  
+    * __`r paste(anrun_crit_04)`__  (`r paste(count(qcsum2))` QC levels)
+5.  QC samples at least in duplicate or 5% of the analytical samples (whichever is greater)? 
+    * __`r paste(anrun_crit_05)`__  (`r paste(count(qcsum))` QC samples)
+      * 5% of the analytical samples = `r paste(0.05*count(analytessum2))`
+      * QC levels in duplicate = `r paste(2*count(qcsum2))`  
+
+
+## 6.4. Distribution of analytical samples 
+1.  At least 2 QC sample levels within the range of concentrations measured in study samples ? 
+    * Evaluate visually if study-samples are analysed 
+```{r distribution samples plot, echo=FALSE, include = TRUE}
+
+ana.dist <- ggplot(data = analytessummary, aes(x = FIT_mean))+
+  geom_histogram(fill = "dodgerblue4", alpha = 0.75,bins = 30)+
+  geom_vline(xintercept=range_min, colour ="red",size = 1)+
+  geom_vline(xintercept=range_max, colour ="red",size = 1)+
+  geom_vline(xintercept=QClow$Std_conc_mean_mean, colour ="darkgreen",size = 1, linetype = "dotted")+
+  geom_vline(xintercept=QCmid$Std_conc_mean_mean, colour ="darkgreen",size = 1, linetype = "dotted")+
+  geom_vline(xintercept=QChigh$Std_conc_mean_mean, colour ="darkgreen",size = 1, linetype = "dotted")+
+  xlab(paste("Concentration", params$comp,"(", params$conc_level, ")",sep = " "))+
+  theme_classic(base_size = plot_size)+
+  labs(title = "Distribution of analytical sample concentrations",
+       caption ="Red lines: analytical range, Green lines: QC-samples")
+ana.dist
+            
+
+```
+
+
+# 7. Diagnostics 
+
+## 7.1. Internal standard 
+```{r ionsuppression, ,fig.show="hold", out.width="50%",echo = FALSE,dpi=300}
+
+zeros <- filter(dat, Level == "Zero")
+ISsignal <- mean(zeros$IS)
+datIS <- filter(dat, Type=="Analyte" | Type=="Standard"|Type=="QC")
+
+ionsup <- ggplot(data = datIS, aes(x = Std_conc, y = IS,color =Type))+
+  geom_point(size = 2)+
+  theme_classic(base_size = plot_size)+
+  labs(title = paste("Peak area of the internal standard", params$IS, sep = " "),
+       subtitle = paste("in function of", params$comp, "concentration", sep = " "),
+       caption ="Dotted black line = IS signal of zero sample (= sample without analyte)",
+       color = "Sample type")+
+  ylab(paste("Area", params$IS, sep =" "))+
+  xlab(paste("Concentration", params$comp,"(", params$conc_level, ")",sep = " "))+
+  geom_hline(aes(yintercept = ISsignal), linetype ="dotted", size = 1,show.legend = TRUE)+
+  geom_smooth(method =lm, formula = y ~ x, show.legend = TRUE, se=FALSE, linetype = "dashed", size = 0.5)+
+  {if(LogC)scale_x_log10()}+
+  {if(LogC)annotation_logticks(sides = "b")}+
+  theme(legend.position = "right")
+ionsup
+ISco <- ggplot(data = datIS, aes(x = Order, y = IS,color =Type))+
+  geom_point(size = 2)+
+  theme_classic(base_size = plot_size)+
+  labs(title = paste("Peak area of the internal standard", params$IS, sep = " "),
+       subtitle = paste("in function of run order"),
+       caption ="Dotted black line = IS signal of zero sample (= sample without analyte)",
+       color = "Sample type")+
+  ylab(paste("Area", params$IS, sep =" "))+
+  xlab("Run order")+
+  geom_hline(aes(yintercept = ISsignal), linetype ="dotted", size = 1,show.legend = TRUE)+
+  geom_smooth(method =lm, formula = y ~ x, show.legend = TRUE, se=FALSE, linetype = "dashed", size = 0.5)+
+  theme(legend.position = "right")
+ISco
+```
+
+
+## 7.2. Peak symmetry 
+```{r Peak symmetry,fig.show="hold", out.width="50%", echo = FALSE,dpi=300}
+datpeakas <- filter(dat, Type=="Analyte" | Type=="Standard"|Type=="QC")
+peakas <- ggplot(data = datpeakas, aes(x = Std_conc , y = Peak_asymmetry, color =Type)) + 
+  geom_point(size =2) +
+  geom_smooth(method =lm, formula = y ~ x, show.legend = TRUE, se=FALSE, linetype = "dashed", size = 0.5)+
+  theme_classic(base_size = plot_size)+
+  ylab("Assymmetry factor quantifier")+
+  geom_hline(aes(yintercept = 0.9), color = "red", show.legend = FALSE)+
+  geom_hline(aes(yintercept = 1.5), linetype = "dashed", color = "orange", show.legend = FALSE)+
+  geom_hline(aes(yintercept = 2), color = "red", show.legend = FALSE)+
+  xlab(paste("Concentration", params$comp,"(", params$conc_level, ")",sep = " "))+
+  {if(LogC)scale_x_log10()}+
+  {if(LogC)annotation_logticks(sides = "b")}+
+  labs(title = "Peak Assymetry Factor",
+       subtitle = paste("in function of", params$comp, "concentration", sep = " "),
+       caption = "Between the red lines: acceptable peak symmetry",
+       color = "Sample type")
+peakas
+
+
+peakasRO <- ggplot(data = datpeakas, aes(x = Order , y = Peak_asymmetry, color =Type)) + 
+  geom_point(size =2) +
+  geom_smooth(method =lm, formula = y ~ x, show.legend = TRUE, se=FALSE, linetype = "dashed", size = 0.5)+
+  theme_classic(base_size = plot_size)+
+  ylab("Assymmetry factor quantifier")+
+  geom_hline(aes(yintercept = 0.9), color = "red", show.legend = FALSE)+
+  geom_hline(aes(yintercept = 1.5), linetype = "dashed", color = "orange", show.legend = FALSE)+
+  geom_hline(aes(yintercept = 2), color = "red", show.legend = FALSE)+
+  xlab("Run order")+
+  labs(title = "Peak Assymetry Factor",
+       subtitle = "In function of run order",
+       caption = "Between the red lines: acceptable peak symmetry",
+       color = "Sample type")
+peakasRO
+```
+
+
+
+## 7.3. Retention time 
+```{r Retention time ,fig.show="hold", out.width="50%",dpi=300}
+datrt <- filter(dat, Type=="Analyte" | Type=="Standard"|Type=="QC")
+Rtcomp_c <- ggplot(data = datrt, aes(x = Std_conc , y = Rt_analyte, color =Type)) + 
+  geom_point(size =2) +
+  theme_classic(base_size = plot_size)+
+  ylab(paste("Retention time", params$comp,"(minutes)",sep = " "))+
+  {if(LogC)scale_x_log10()}+
+  {if(LogC)annotation_logticks(sides = "b")}+
+  xlab(paste("Concentration", params$comp,"(", params$conc_level,")", sep = " " ))+
+  labs(title = paste("Retention time", params$comp, sep = " "),
+       subtitle= paste("in function of", params$comp, "concentration", sep = " "))
+Rtcomp_c
+
+Rtcomp_r <- ggplot(data = datrt, aes(x = Order , y = Rt_analyte, color =Type)) + 
+  geom_point(size =2) +
+  theme_classic(base_size = plot_size)+
+  ylab(paste("Retention time", params$comp,"(minutes)",sep = " "))+
+  xlab("Run order")+
+  labs(title = paste("Retention time", params$comp, sep = " "),
+       subtitle = "in function of run order",
+       color = "Sample type")
+Rtcomp_r
+
+```
+
+## 7.4. S/N ratio 
+```{r signal over noise, echo = FALSE,fig.show="hold", out.width="50%",dpi=300}
+dat_SN <- filter(dat, Type=="Analyte" | Type=="Standard"|Type=="QC")
+signalnoise.c <- ggplot(data = dat_SN, aes(x = Std_conc, y = Signal_to_noise, color =Type)) + 
+  geom_point(size =2) +
+  scale_y_log10()+
+  scale_x_log10()+
+  annotation_logticks()+
+  theme_classic(base_size = plot_size)+
+  ylab("S/N Quantifier")+
+  xlab(paste("Concentration", params$comp,"(", params$conc_level,")", sep = " " ))+
+  geom_hline(aes(yintercept = 10), linetype = "dashed", color = "red", show.legend = FALSE)+
+  labs(title = "S/N ratio", 
+       subtitle= paste("in function of", params$comp, "concentration", sep = " "),
+       caption = "Dashed red line = Quantification criterium: S/N > 10",
+       color = "Sample type")
+signalnoise.c
+
+
+signalnoise.r <- ggplot(data = dat_SN, aes(x = Order, y = Signal_to_noise, color =Type)) + 
+  geom_point(size =2) +
+  scale_y_log10()+
+  annotation_logticks(sides = "l")+
+  theme_classic(base_size = plot_size)+
+  ylab("S/N Quantifier")+
+  xlab(paste("Concentration", params$comp,"(", params$conc_level,")", sep = " " ))+
+  geom_hline(aes(yintercept = 10), linetype = "dashed", color = "red", show.legend = FALSE)+
+  labs(title = "S/N ratio", 
+       subtitle= paste("in function of run order"),
+       caption = "Dashed red line = Quantification criterium: S/N > 10",
+       color = "Sample type")
+signalnoise.r
+```
+
+## 7.5. Quantifier/Qualifier ratio 
+```{r quantqual ratio, fig.show="hold", out.width="50%",echo = FALSE,dpi=300}
+quant_qual <- filter(dat, Type == "Standard" |Type == "QC"|Type == "Analyte")%>% mutate(quantoqual = Quantifier/Qualifier)
+quant_qual_s <- select(quant_qual,c("Type","quantoqual") )
+quant_qual_s <-  group_by(quant_qual_s,Type) %>% summarise(mean_ratio = mean(quantoqual,na.rm=TRUE), min_ratio = min(quantoqual,na.rm=TRUE), max_ratio= max(quantoqual,na.rm=TRUE), sd_ratio = sd(quantoqual,na.rm=TRUE))
+
+mean_quant_qual <- mean(filter(quant_qual_s, Type == "Standard" | Type == "QC")$mean_ratio)
+min_quant_qual <- mean_quant_qual*0.8
+max_quant_qual <- mean_quant_qual*1.2
+
+# plot in function of concentration
+quantqual_c <- ggplot(data = quant_qual, aes(x = Std_conc, y = quantoqual, color =Type)) + 
+  geom_point(size=2) +
+  geom_hline(yintercept=mean_quant_qual, colour="darkgreen", linetype = "dashed")+
+  geom_hline(yintercept=min_quant_qual, colour="red")+
+  geom_hline(yintercept=max_quant_qual, colour="red")+
+  {if(LogC)scale_x_log10()}+
+  {if(LogC)annotation_logticks(sides = "b")}+
+  theme_classic(base_size = plot_size)+
+  ylab("Quantifier to Qualifier ratio")+
+  xlab(paste("Concentration", params$comp,"(", params$conc_level,")", sep = " " ))+
+  labs(title = paste("Quantifier to Qualifier ratio", params$comp, sep = " "),
+       subtitle= paste("in function of", params$comp, "concentration", sep = " "),
+       color = "Sample type",
+      caption = "Dashed green line = mean ratio standards & QCs\n  Red lines = mean ratio standards & QCs +-20%")
+quantqual_c
+
+
+# plot in function of run order
+quantqual_o <- ggplot(data = quant_qual, aes(x = Order, y = quantoqual, color =Type)) + 
+  geom_point(size=2.5) +
+  geom_hline(yintercept=mean_quant_qual, colour="darkgreen", linetype = "dashed")+
+  geom_hline(yintercept=min_quant_qual, colour="red")+
+  geom_hline(yintercept=max_quant_qual, colour="red")+
+  theme_classic(base_size = plot_size)+
+  ylab("Quantifier to Qualifier ratio")+
+  xlab("Injection order")+
+  labs(title = paste("Quantifier to Qualifier ratio", params$comp, sep = " "),
+       subtitle= "In function of injection order",
+       color = "Sample type",
+      caption = "Dashed green line = mean ratio standards & QCs\n  Red lines = mean ratio standards & QCs +-20%")
+quantqual_o
+
+#Table
+quantqual_table<- mutate_at(quant_qual_s, vars(mean_ratio, min_ratio, max_ratio, sd_ratio), funs(round(.,digits = 3)))
+#quantqual_table<-  sort(quantqual_table$Type,decreasing=TRUE)
+quantqual_table <- rename(quantqual_table, c("Mean quant/qual ratio" = "mean_ratio",
+                                "Min. quant/qual ratio" =  "min_ratio", 
+                                "Max. quant/qual ratio" = "max_ratio",
+                                "SD quant/qual ratio" = "sd_ratio",
+                                "Sample type"= "Type"))
+quantqual_table <- knitr::kable(quantqual_table,
+                       format = "html",
+                       digits = getOption("digits"),
+                       align = "lcccc",
+                       row.names = NA,
+                       col.names = NA,
+                       caption = "Quantifier/qualifier ratio",
+                       label =,
+                       format.args = list(),
+                       escape = FALSE
+                       ) %>% kable_styling(bootstrap_options = "striped", font_size = font_size)
+quantqual_table
+```
+
+## 7.6. Calibration model
+```{r calmodel, echo = FALSE,dpi=300}
+calmodel <- augment(calcurve)
+calmodel$.rstudent <- rstudent(calcurve) # Studentized residuals
+calmodel$.dfbeta <- dfbeta(calcurve) # DFBeta
+calmodel$.dffits <- dffits(calcurve) # DFFit 
+calmodel$.covratio <- covratio(calcurve) # covariance ratio
+
+summary(calcurve)
+
+#residuals vs fitted value
+cm_residvsfit <-ggplot(calmodel, aes(x = .fitted, y = .resid)) +
+  geom_point(colour = col_cal, size = 2.5)+
+  geom_hline(yintercept=0, linetype= "dashed", colour = "darkgreen")+
+  labs(y ="Residual",
+       x="Fitted concentration",
+       title= "Residuals versus fitted concentration")+
+  {if(LogC)scale_x_log10()}+
+  {if(LogC)annotation_logticks(sides = "b")}+
+  theme_classic(base_size = plot_size)
+cm_residvsfit
+
+
+#standardized residuals vs fitted value 
+cm_std.residvsfit <-ggplot(calmodel, aes(x = .fitted, y = .std.resid)) +
+  geom_point(colour = col_cal, size = 2.5)+
+  geom_hline(yintercept=2.58, colour = "red")+
+  geom_hline(yintercept=-2.58, colour = "red")+
+  geom_hline(yintercept=0, linetype= "dashed", colour = "darkgreen")+
+  geom_hline(yintercept=1.96, colour = "red", linetype = "dashed")+
+  geom_hline(yintercept=-1.96, colour = "red", linetype = "dashed")+
+  {if(LogC)scale_x_log10()}+
+  {if(LogC)annotation_logticks(sides = "b")}+
+  labs(y ="Standardized residual",
+         x="Fitted concentration",
+         title= "Standardized residuals versus fitted concentration",
+       caption="Red lines : 99% or 95% of values under normal distribution (full or dashed respectively)")+
+  theme_classic(base_size = plot_size)
+cm_std.residvsfit
+
+
+#Cooks distance vs fitted value
+cm_cookvsfit <-ggplot(calmodel, aes(x = .fitted, y = .cooksd)) +
+  geom_point(colour = col_cal, size = 2.5)+
+  geom_hline(yintercept =1, colour="red")+
+  geom_hline(yintercept=mean(calmodel$.cooksd), linetype= "dashed", colour = "darkgreen")+
+  geom_hline(yintercept=4/nrow(calmodel), colour = "red", linetype= "dashed")+
+  {if(LogC)scale_x_log10()}+
+  {if(LogC)annotation_logticks(sides = "b")}+
+  labs(y ="Cook's distance",
+         x="Fitted concentration",
+         title= "Cook's distance versus fitted concentration",
+       caption="Red line :dashed: investigate Cook's D > 4/n \n Above full line = cause for concern \n Green line = average CooksD")+
+    theme_classic(base_size = plot_size)
+cm_cookvsfit 
+
+
+#Hat values/leverage
+cm_hatsvsfit <-ggplot(calmodel, aes(x = .fitted, y = .hat)) +
+  geom_point(colour = col_cal, size = 2.5)+
+  geom_hline(yintercept =6/nrow(calmodel), colour="red")+
+  geom_hline(yintercept=2/nrow(calmodel), linetype= "dashed", colour = "darkgreen")+
+  geom_hline(yintercept=4/nrow(calmodel), colour = "red", linetype= "dashed")+
+  {if(LogC)scale_x_log10()}+
+  {if(LogC)annotation_logticks(sides = "b")}+
+  labs(y ="Hat value",
+         x="Fitted concentration",
+         title= "Hat values (Leverages) versus fitted concentration",
+       caption="Green line: average value ((k+1)/n))\n Dashed red line: twice the average value\n Full red line: trice the average value")+
+    theme_classic(base_size = plot_size)
+cm_hatsvsfit 
+
+# Covariance ratio 
+cm_covvsfit <-ggplot(calmodel, aes(x = .fitted, y = .covratio)) +
+  geom_point(colour = col_cal, size = 2.5)+
+  geom_hline(yintercept =1+6/nrow(calmodel), colour="red")+
+  geom_hline(yintercept=1-6/nrow(calmodel), colour="red")+
+  {if(LogC)scale_x_log10()}+
+  {if(LogC)annotation_logticks(sides = "b")}+
+  labs(y ="Covarariance ratio",
+         x="Fitted concentration",
+         title= "Covarariance ratio  versus fitted concentration",
+       caption="red lines: 1 +- [[3*(k+1)/n], the upper and lower limit of acceptable values for the covariance level")+
+  theme_classic(base_size = plot_size)
+cm_covvsfit 
+
+#Independent errors - Durbin Watson Test 
+dwt(calcurve) #statistic should be between 1 & 3, not significant: independent errors 
+
+# QQ plot of standardized residuals
+resid_qq <- ggplot(calmodel, aes(sample=.std.resid))+
+  stat_qq(colour = col_cal, size = 2.5)+
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed")+
+  labs(y ="Standaridized residuals",
+         x="Theoretical Quantiles",
+         title= "Normal Q-Q")+
+  theme_classic(base_size = plot_size)
+resid_qq    
+
+#Histogram of standardized residuals
+resid_hist <-ggplot(calmodel, aes(.std.resid))+ 
+  geom_histogram(aes(y=..density..), colour = "black", fill =col_cal, alpha = 0.5)+
+  labs(title="Histogram of standardised residuals",
+       x="Standardised residuals",
+       y="Density")+
+  stat_function(fun=dnorm, args = list(mean = mean(calmodel$.std.resid, na.rm=TRUE), sd = sd(calmodel$.std.resid, na.rm=TRUE)))+
+  theme_classic(base_size = plot_size)
+resid_hist
+```
+
+
+## 7.7. Other weighing functions
+
+### 7.7.1. Summary alternative weighing functions
+```{r summary table calibration models, echo = FALSE}
+
+calcurves_table_summary <- data.frame(list(model=c("unweighed model","weighed 1/x", "weighed 1/x²"), 
+                                           Inacurate_calibrators = c(sum(abs(calcurves_table$Unweight_accuracy[1])>20)+sum(abs(calcurves_table$Unweight_accuracy[2:8])>15),
+                                                                     sum(abs(calcurves_table$Weight1overx_accuracy[1])>20)+sum(abs(calcurves_table$Weight1overx_accuracy[2:8])>15),
+                                                                     sum(abs(calcurves_table$Weight1overx2_accuracy[1])>20)+sum(abs(calcurves_table$Weight1overx2_accuracy[2:8])>15)),
+                                           R_squared = round(c(summary(calcurve_1)$r.squared,summary(calcurve_2)$r.squared,summary(calcurve_3)$r.squared),4),
+                                           Inacurate_QCsamples = c(QC_01_inacuratesum$n,QC_02_inacuratesum$n,QC_03_inacuratesum$n),
+                                           Inprecise_QCsamples = c(QC_01_inprecisionsum$n, QC_02_inprecisionsum$n, QC_03_inprecisionsum$n)))
+
+calcurves_table_summary <- rename(calcurves_table_summary, c("Inaccurate calibrators" = "Inacurate_calibrators",
+                                                   "R²" ="R_squared",
+                                                   "Inaccurate QC samples"="Inacurate_QCsamples",
+                                                   "Inprecise QC samples"="Inprecise_QCsamples"))
+calcurves_table_summary <- knitr::kable(calcurves_table_summary, caption = "Summary of the different weighing models")%>% kable_styling(bootstrap_options = "striped", font_size = font_size)
+calcurves_table_summary
+
+```
+
+### 7.7.2. QC samples with alternative weighing functions
+```{r QC samples unweighed model accuracy, echo=FALSE, warning = FALSE,include = ifelse(weighing == 1, FALSE, TRUE)}
+
+
+QC_table_01 <- rename(QC_table_01, c("Nominal concentration (µg/mL)" =  "Std_conc_mean", 
+                                     "Fitted concentration (µg/mL)" = "fitted_unweighted_model", 
+                                     "Accuracy (%)" = "Unweight_accuracy",
+                                     "Passes accuracy criterium?" = "Unweight_accuracy_criterium" ))
+QC_kable_01 <- knitr::kable(QC_table_01, 
+                            caption = "QC samples: Unweighed regression model",
+                            format = "html",
+                            digits = getOption("digits"),
+                            align = "lccccc",
+                            rownames = NA,
+                            label = , 
+                            format.args = list(),
+                            escape = FALSE)%>% kable_styling(bootstrap_options = "hover",full_width = F,position = "left",font_size = font_size) %>% add_footnote(paste("concentration units =", params$conc_level))
+QC_kable_01
+
+
+QC_01_accuracy <- ggplot(data = qcsum, aes(x=Std_conc_mean, y = Unweight_accuracy )) + 
+  geom_point(aes(shape = Level), size = 2, colour = col_QC) + 
+  geom_hline(aes(yintercept= 15,colour="red"),show.legend = FALSE)+
+  geom_hline(aes(yintercept= -15,colour="red"),show.legend = FALSE)+
+  geom_hline(aes(yintercept= 20,colour="red"), linetype = "dashed",show.legend = FALSE)+
+  geom_hline(aes(yintercept= -20,colour="red"), linetype = "dashed",show.legend = FALSE)+
+  labs(x=paste("Nominal concentration ", params$comp, " (", params$conc_level,")", sep = ""), y ="Accuracy (% bias)", title = "Accuracy of the QC samples, unweighed model")+
+  theme_classic(base_size = plot_size)+
+  labs(shape = "QC level:")
+QC_01_accuracy
+
+
+```
+```{r QC samples unweighed model precision, echo=FALSE, warning = FALSE, include = ifelse(weighing == 1, FALSE, TRUE)}
+QC2_kable_01 <- rename(QC2_table_01, c("Nominal concentration " =  "Std_conc_mean_mean", 
+                                     "Mean fitted concentration " = "fitted_unweighted_model_mean",
+                                     "SD fitted concentration" = "fitted_unweighted_model_sd",
+                                     "Precision (%)" = "fitted_unweighted_model_RSD",
+                                     "Passes precision criterium?" = "Unweight_precision_criterium" ))
+
+QC2_kable_01 <- knitr::kable(QC2_kable_01 ,
+                       format = "html",
+                       digits = getOption("digits"),
+                       align = "lcccc",
+                       row.names = NA,
+                       col.names = NA,
+                       caption = "Precision QC samples, unweighed model",
+                       label =,
+                       format.args = list(),
+                       escape = FALSE
+) %>% kable_styling(bootstrap_options = "hover",full_width = F,position = "left",font_size = font_size) %>% add_footnote(paste("concentration units =", params$conc_level))
+QC2_kable_01
+
+
+###
+
+QC_01_precision <- ggplot(data = qcsum2, aes(x=Std_conc_mean_mean, y = fitted_unweighted_model_RSD )) + 
+  geom_point(size = 2, colour = col_QC) + 
+  geom_text(aes(label=Level), position = position_dodge(width = 1), vjust = -0.5, size = 3)+
+  geom_hline(aes(yintercept= 15,colour="red"),show.legend = FALSE)+
+  geom_hline(aes(yintercept= 20,colour="red"), linetype = "dashed",show.legend = FALSE)+
+  labs(x=paste("Nominal concentration", params$comp, "(", params$conc_level,")", sep = " "), y ="Precision ( % CV )", title = "Precision of the QC samples, unweighed model")+
+  theme_classic(base_size = plot_size) +
+  ylim(0,NA)
+QC_01_precision
+
+```
+
+```{r QC samples 1/X weighed model accuracy, echo=FALSE,include = ifelse(weighing == 2, FALSE, TRUE)}
+
+QC_table_02 <- rename(QC_table_02, c("Nominal concentration (µg/mL)" =  "Std_conc_mean", 
+                                     "Fitted concentration (µg/mL)" = "fitted_weighted1overx_model", 
+                                     "Accuracy (%)" = "weighted1overx_accuracy",
+                                     "Passes accuracy criterium?" = "weighted1overx_accuracy_criterium" ))
+QC_kable_02 <- knitr::kable(QC_table_02, 
+                            caption = "QC samples: 1/x weighed regression model",
+                            format = "html",
+                            digits = getOption("digits"),
+                            align = "lccccc",
+                            rownames = NA,
+                            label = , 
+                            format.args = list(),
+                            escape = FALSE)%>% kable_styling(bootstrap_options = "hover",full_width = F,position = "left",font_size = font_size) %>% add_footnote(paste("concentration units =", params$conc_level))
+QC_kable_02
+
+
+QC_02_accuracy <- ggplot(data = qcsum, aes(x=Std_conc_mean, y = weighted1overx_accuracy )) + 
+  geom_point(aes(shape = Level), size = 2, colour = col_QC) + 
+  geom_hline(aes(yintercept= 15,colour="red"),show.legend = FALSE)+
+  geom_hline(aes(yintercept= -15,colour="red"),show.legend = FALSE)+
+  geom_hline(aes(yintercept= 20,colour="red"),linetype = "dashed", show.legend = FALSE)+
+  geom_hline(aes(yintercept= -20,colour="red"),linetype = "dashed",show.legend = FALSE)+
+  labs(x=paste("Nominal concentration", params$comp, "(", params$conc_level,")", sep = " "), y ="Accuracy ( % bias )", title = "Accuracy of the QC samples, 1/x weighed model")+
+  theme_classic(base_size = plot_size)+
+  labs(shape = "QC level:")
+QC_02_accuracy
+
+```
+```{r QC samples 1/X weighed model precision, echo=FALSE, include = ifelse(weighing == 2, FALSE, TRUE)}
+
+QC2_kable_02 <- rename(QC2_table_02, c("Nominal concentration " =  "Std_conc_mean_mean", 
+                                     "Mean fitted concentration " = "fitted_weighted1overx_model_mean",
+                                     "SD fitted concentration" = "fitted_weighted1overx_model_sd",
+                                     "Precision (%)" = "fitted_weighted1overx_model_RSD",
+                                     "Passes precision criterium?" = "weighted1overx_precision_criterium" ))
+
+QC2_kable_02 <- knitr::kable(QC2_kable_02 ,
+                       format = "html",
+                       digits = getOption("digits"),
+                       align = "lcccc",
+                       row.names = NA,
+                       col.names = NA,
+                       caption = "Precision QC samples, 1/x weighed model",
+                       label =,
+                       format.args = list(),
+                       escape = FALSE
+) %>% kable_styling(bootstrap_options = "hover",full_width = F,position = "left",font_size = font_size) %>% add_footnote(paste("concentration units =", params$conc_level))
+QC2_kable_02
+
+
+QC_02_precision <- ggplot(data = qcsum2, aes(x=Std_conc_mean_mean, y = fitted_weighted1overx_model_RSD )) + 
+  geom_point(size = 2, colour = col_QC) + 
+  geom_text(aes(label=Level), position = position_dodge(width = 1), vjust = -0.5, size = 3)+
+  geom_hline(aes(yintercept= 15,colour="red"),show.legend = FALSE)+
+  geom_hline(aes(yintercept= 20,colour="red"),linetype = "dashed",show.legend = FALSE)+
+  labs(x=paste("Nominal concentration", params$comp, "(", params$conc_level,")", sep = " "), y ="Precision ( % CV )", title = "Precision of the QC samples, 1/X weighed model")+
+  theme_classic(base_size = plot_size) +
+  ylim(0,NA)
+QC_02_precision
+
+```
+
+```{r QC samples 1/X² weighed model accuracy, echo=FALSE, include = ifelse(weighing == 3, FALSE, TRUE)}
+
+QC_table_03 <- rename(QC_table_03, c("Nominal concentration (µg/mL)" =  "Std_conc_mean", 
+                                     "Fitted concentration (µg/mL)" = "fitted_weighted1overx2_model", 
+                                     "Accuracy (%)" = "weighted1overx2_accuracy",
+                                     "Passes accuracy criterium?" = "weighted1overx2_accuracy_criterium" ))
+QC_kable_03 <- knitr::kable(QC_table_03, 
+                            caption = "QC samples: 1/X² weighed regression model",
+                            format = "html",
+                            digits = getOption("digits"),
+                            align = "lccccc",
+                            rownames = NA,
+                            label = , 
+                            format.args = list(),
+                            escape = FALSE)%>% kable_styling(bootstrap_options = "hover",full_width = F,position = "left",font_size = font_size) %>% add_footnote(paste("concentration units =", params$conc_level))
+QC_kable_03
+
+QC_03_accuracy <- ggplot(data = qcsum, aes(x=Std_conc_mean, y = weighted1overx2_accuracy )) + 
+  geom_point(aes(shape = Level), size = 2, colour = col_QC) + 
+  geom_hline(aes(yintercept= 15,colour="red"),show.legend = FALSE)+
+  geom_hline(aes(yintercept= -15,colour="red"),show.legend = FALSE)+
+  geom_hline(aes(yintercept= 20,colour="red"),linetype = "dashed",show.legend = FALSE)+
+  geom_hline(aes(yintercept= -20,colour="red"),linetype = "dashed",show.legend = FALSE)+
+  labs(x=paste("Nominal concentration", params$comp, "(", params$conc_level,")", sep = " "), y ="Accuracy ( % bias )", title = "Accuracy of the QC samples, 1/x² weighed model")+
+  theme_classic(base_size = plot_size)+
+  labs(shape = "QC level:")
+QC_03_accuracy
+
+```
+```{r QC samples 1/X²  model precision, echo=FALSE, include = ifelse(weighing == 3, FALSE, TRUE)}
+
+QC2_kable_03 <- rename(QC2_table_03, c("Nominal concentration " =  "Std_conc_mean_mean", 
+                                     "Mean fitted concentration " = "fitted_weighted1overx2_model_mean",
+                                     "SD fitted concentration" = "fitted_weighted1overx2_model_sd",
+                                     "Precision (%)" = "fitted_weighted1overx2_model_RSD",
+                                     "Passes precision criterium?" = "weighted1overx2_precision_criterium" ))
+
+QC2_kable_03 <- knitr::kable(QC2_kable_03 ,
+                       format = "html",
+                       digits = getOption("digits"),
+                       align = "lcccc",
+                       row.names = NA,
+                       col.names = NA,
+                       caption = "Precision QC samples, 1/x² weighed model",
+                       label =,
+                       format.args = list(),
+                       escape = FALSE
+) %>% kable_styling(bootstrap_options = "hover",full_width = F,position = "left",font_size = font_size) %>% add_footnote(paste("concentration units =", params$conc_level))
+QC2_kable_03
+
+
+
+QC_03_precision <- ggplot(data = qcsum2, aes(x=Std_conc_mean_mean, y = fitted_weighted1overx2_model_RSD )) + 
+  geom_point(size = 2, colour = col_QC) + 
+  geom_text(aes(label=Level), position = position_dodge(width = 1), vjust = -0.5, size = 3)+
+  geom_hline(aes(yintercept= 15,colour="red"),show.legend = FALSE)+
+  geom_hline(aes(yintercept= 20,colour="red"),linetype = "dashed", show.legend = FALSE)+
+  labs(x=paste("Nominal concentration", params$comp, "(", params$conc_level,")", sep = " "), y ="Precision ( % CV )", title = "Precision of the QC samples, 1/X² weighed model")+
+  theme_classic(base_size = plot_size) +
+  ylim(0,NA)
+QC_03_precision
+
+```
+
+
+
+# 8. Input 
+
+## 8.1. Raw Data 
+```{r Raw Data}
+datraw <- select(dat, Order, Name, Type, Level, Replicate, Injection, Std_conc, Quantifier, Qualifier, IS, Response, Signal_to_noise,
+                 Peak_asymmetry, Rt_analyte)
+datraw <- mutate_at(datraw, vars(Quantifier, Qualifier, IS, Signal_to_noise), funs(round(.,digits = 0)))
+datraw <- mutate_at(datraw, vars(Std_conc), funs(round(.,digits = 4)))
+datraw <- mutate_at(datraw, vars(Peak_asymmetry, Rt_analyte, Response), funs(round(.,digits = 2)))
+datraw <- rename(datraw, c("Run Order" = "Order",
+                                "Concentration (µg/mL)" =  "Std_conc", 
+                                "Area Quantifier" = "Quantifier",
+                                "Area Qualifier" = "Qualifier",
+                                "Area Internal Standard" = "IS",
+                                "S/N" = "Signal_to_noise",
+                                "Peak asymmetry" = "Peak_asymmetry",
+                                "Retention time analyte (minutes)" = "Rt_analyte"))
+
+datraw <- knitr::kable(datraw,
+                       format = "html",
+                       digits = getOption("digits"),
+                       align = "clcccccccccccccc",
+                       row.names = NA,
+                       col.names = NA,
+                       caption = "Raw data from Excell file",
+                       label =,
+                       format.args = list(),
+                       escape = FALSE
+                       ) %>% kable_styling(bootstrap_options = "striped", font_size = font_size)
+datraw
+
+```
+
+
+
+
+***
+
+> Version A.3.
+> 
+> Creator Rmarkdown script: Pieter-Jan De Sutter (Ghent University)
+
+
